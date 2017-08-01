@@ -3,9 +3,9 @@ title: "Fractal Hackathon"
 output: html_notebook
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+First of all, a big thanks to Analytics Vidya and Fractal Analytics to provide a platform to test my newly acquired skills. AV's articles have been the main source of my learning and companies like Fractal are setting an excellent precedent by organizing hackathons of this kind which I believe is a good test to find candidates to work in data science.  
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+Before the beginning of this competition, it was projected as a TS problem. Since, the training data had many features I decided to work on it like any other problem. Beginning with loading the necessary libraries and reading the data using fread a faster alternative to read.csv. 
 
 ```{r}
 library(data.table)
@@ -18,7 +18,11 @@ test <- fread("test.csv", stringsAsFactors = F)
 test[['Price']] = NA
 test[['Number_Of_Sales']] = NA
 ```
+## Feature Engineering
 
+Next, logical step was feature engineering. I decided to break the date feature of the dataset into its components since I believe the year, month, day and week day can have an effect on how traders behave and what products they want to sell or buy.  
+
+Generating all possible features from the Datetime variable.
 
 ```{r}
 train$Datetime <- ymd(train$Datetime)
@@ -28,15 +32,22 @@ combin$Year <- year(combin$Datetime)
 combin$Day <- day(combin$Datetime)
 combin$Month <- month(combin$Datetime)
 combin$wday <- wday(combin$Datetime)
-summary(combin)
+# summary(combin)
 ```
+
+The next feature I generated turned out to be more important than anything else in the end. While looking at the test data I felt that there is a need to get a feature that gives an idea for each product ID and hence I calculated median of price and number_of_sales for each product ID and integrated 2 new features.
 
 ```{r}
 combin$Number_Of_Sales <- as.numeric(combin$Number_Of_Sales)
 combin[, Median_Price := median(Price, na.rm = T), by = Item_ID]
 combin[, Median_Number_Of_Sales := median(Number_Of_Sales, na.rm = T), by = Item_ID]
-summary(combin)
+
 ```
+
+Since, it is a TS, I made an assumption that the events are mentioned in a sequence as they occured during a particular day. Thus creating a variable called Trens_ID that tells us whether a transaction was in the first half of events (first 50%) events that occured on a day or the later 50%.  
+
+Another new feature 'Prod_ID' provides the information about how long its been since the product was transacted during the given time period.
+
 
 ```{r}
 tc_summ <- combin %>%
@@ -46,14 +57,17 @@ combin <- full_join(combin,tc_summ,by = "Datetime")
 combin <- combin %>% group_by(Datetime) %>% mutate(Trans_ID = row_number()/Trans_Count)
 combin <- combin %>% group_by(Item_ID) %>% mutate(Prod_ID = row_number())
 ```
+## Missing Value Imputation
 
-```{r}
-summary(combin)
-```
+I used Excel to observe that there was no decipherable pattern in the only feature with missing values (Category_2). Only thing I observed was for product with missing values belonged to category 3 '0'. I decided to impute the missing values using a '0'.  
+
+In hindsight I think it was not a good call to make as this is an ordered feature and putting it below every other outcome might not be the best idea.
 
 ```{r}
 combin$Category_2[is.na(combin$Category_2)] <- 0
 ```
+## Preprocessing Data
+Converting the features according to the type mentioned by the organizers
 
 ```{r}
 combin$Item_ID <- factor(combin$Item_ID)
@@ -61,12 +75,16 @@ combin$Category_1 <- factor(combin$Category_1, ordered = FALSE)
 combin$Category_2 <- as.numeric(combin$Category_2)
 glimpse(combin)
 ```
+## H2o modeling and final submission
+Loading the H2o cluster for model building
 
 ```{r}
 library(h2o)
 localH2O <- h2o.init(nthreads = -1)
  h2o.init()
 ```
+
+This being a large dataset, I decided to throw one of the powerful non linear algorithms (GBM) at it. This was inspired by the fact that this algorithm worked well for the 'Black Friday' Hackathon which is a practice hackathon on AV. Looking at the deep similarities between the 2 datasets I decided to give it a shot. The tuning part was done in H2o flow and I have included the final parameters in this notebook.
 
 ```{r}
 c.train <- combin[1:881876,]
@@ -79,14 +97,11 @@ test.h2o <- as.h2o(c.test)
 ```
 
 ```{r}
-train.split <- h2o.splitFrame(train.h2o, ratios = c(0.2,0.2,0.2,0.2), c('Sample_1','Sample_2', 'Sample_3', 'Sample_4','Sample_5'), seed = 1122)
-```
-
-
-```{r}
 y_dep <- 7
 x_indep <- c(2,4:6,9:17)
+```
 
+```{r}
 system.time(
 gbm.model_price <- h2o.gbm(y=y_dep, x = x_indep, training_frame = train.h2o, ntrees = 1000, max_depth = 8, learn_rate = 0.01, seed = 1122))
 ```
@@ -97,7 +112,6 @@ gbm.model_volume <- h2o.gbm(y=y_dep, x = x_indep, training_frame = train.h2o, nt
 ```
 ```{r}
 h2o.performance(gbm.model_price)
-# gbm.model_price$model@crossvalidationmetrics
 ```
 
 ```{r}
@@ -112,14 +126,13 @@ predict.gbm_volume <- as.data.frame(h2o.predict(gbm.model_volume, test.h2o))
 
 ```{r}
 sub_gbm <- data.frame(ID = test$ID, Number_Of_Sales = predict.gbm_volume$predict, Price = predict.gbm_price$predict)
-write.csv(sub_gbm, file = "sub_gbm_new_2.csv", row.names = F)
+write.csv(sub_gbm, file = "sub_gbm_new.csv", row.names = F)
 ```
 
-```{r}
-# predict.gbm_price <- as.data.frame(h2o.predict(gbm.model_price, train.h2o))
+Next, I applied a deep learning algorithm with feed forward neural networks.
 
+```{r}
 y_dep <- 7
-x_indep <- c(2,4:6,9:17)
 system.time(
              dlearning.model_price <- h2o.deeplearning(y = y_dep,
              x = x_indep,
@@ -145,19 +158,21 @@ system.time(
              )
 )
 ```
-```{r}
-h2o.performance(dlearning.model_price)
-```
+
+Finally the ensemble led me to the final submission I made. 
 
 ```{r}
 predict.dl_price <- as.data.frame(h2o.predict(dlearning.model_price, test.h2o))
 predict.dl_volume <- as.data.frame(h2o.predict(dlearning.model_volume, test.h2o))
-sub_dl <- data.frame(ID = test$ID, Number_Of_Sales = predict.dl_volume$predict, Price = predict.dl_price$predict)
-write.csv(sub_dl, file = "sub_dl_new.csv", row.names = F)
+sub_ens <- data.frame(ID = test$ID, Number_Of_Sales = round(0.7 * predict.dl_volume$predict + 0.3 * predict.gbm_volume$predict,0), Price = 0.7 * predict.dl_price$predict + 0.3 * predict.gbm_price$predict)
+write.csv(sub_ens, file = "sub_ens_newest.csv", row.names = F)
 ```
 
-```{r}
-sub_ens <- data.frame(ID = test$ID, Number_Of_Sales = round(0.7 * predict.dl_volume$predict + 0.3 * predict.gbm_volume$predict,0), Price = 0.7 * predict.dl_price$predict + 0.3 * predict.gbm_price$predict)
-write.csv(sub_ens, file = "sub_ens_old.csv", row.names = F)
-```
+I want to come clean and inform that I accidently uploaded the older version of my code with my final submission. Here, I have included the actual code that generates my submission.  
+
+This is far from a good approach but I consider it as a fairly good attempt for a first hackathon. 
+
+One thing I surely missed was checking my final predictions from the deep learning model that had some negative values which is not possible and definitely hurt y RMSE.
+
+I also could not try XGBoost because of my limited experince of using it.
 
