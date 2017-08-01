@@ -1,0 +1,163 @@
+---
+title: "Fractal Hackathon"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+setwd("C:/Users/ankit/Desktop/R/Fractal/")
+train <- fread("train.csv", stringsAsFactors = F)
+test <- fread("test.csv", stringsAsFactors = F)
+test[['Price']] = NA
+test[['Number_Of_Sales']] = NA
+```
+
+
+```{r}
+train$Datetime <- ymd(train$Datetime)
+test$Datetime <- ymd(test$Datetime)
+combin <- rbindlist(list(train,test[,c(6,1,2,5,4,3,7,8)]))
+combin$Year <- year(combin$Datetime)
+combin$Day <- day(combin$Datetime)
+combin$Month <- month(combin$Datetime)
+combin$wday <- wday(combin$Datetime)
+summary(combin)
+```
+
+```{r}
+combin$Number_Of_Sales <- as.numeric(combin$Number_Of_Sales)
+combin[, Median_Price := median(Price, na.rm = T), by = Item_ID]
+combin[, Median_Number_Of_Sales := median(Number_Of_Sales, na.rm = T), by = Item_ID]
+summary(combin)
+```
+
+```{r}
+tc_summ <- combin %>%
+            group_by(Datetime) %>%
+            summarise(Trans_Count = n())
+combin <- full_join(combin,tc_summ,by = "Datetime")
+combin <- combin %>% group_by(Datetime) %>% mutate(Trans_ID = row_number()/Trans_Count)
+combin <- combin %>% group_by(Item_ID) %>% mutate(Prod_ID = row_number())
+```
+
+```{r}
+summary(combin)
+```
+
+```{r}
+combin$Category_2[is.na(combin$Category_2)] <- 0
+```
+
+```{r}
+combin$Item_ID <- factor(combin$Item_ID)
+combin$Category_1 <- factor(combin$Category_1, ordered = FALSE)
+combin$Category_2 <- as.numeric(combin$Category_2)
+glimpse(combin)
+```
+
+```{r}
+library(h2o)
+localH2O <- h2o.init(nthreads = -1)
+ h2o.init()
+```
+
+```{r}
+c.train <- combin[1:881876,]
+c.test <- combin[-(1:881876),]
+```
+
+```{r}
+train.h2o <- as.h2o(c.train)
+test.h2o <- as.h2o(c.test)
+```
+
+```{r}
+train.split <- h2o.splitFrame(train.h2o, ratios = c(0.2,0.2,0.2,0.2), c('Sample_1','Sample_2', 'Sample_3', 'Sample_4','Sample_5'), seed = 1122)
+```
+
+
+```{r}
+y_dep <- 7
+x_indep <- c(2,4:6,9:17)
+
+system.time(
+gbm.model_price <- h2o.gbm(y=y_dep, x = x_indep, training_frame = train.h2o, ntrees = 1000, max_depth = 8, learn_rate = 0.01, seed = 1122))
+```
+
+```{r}
+y_dep <- 8
+gbm.model_volume <- h2o.gbm(y=y_dep, x = x_indep, training_frame = train.h2o, ntrees = 1500, max_depth = 8, learn_rate = 0.01, seed = 1122)
+```
+```{r}
+h2o.performance(gbm.model_price)
+# gbm.model_price$model@crossvalidationmetrics
+```
+
+```{r}
+h2o.performance(gbm.model_volume)
+
+```
+
+```{r}
+predict.gbm_price <- as.data.frame(h2o.predict(gbm.model_price, test.h2o))
+predict.gbm_volume <- as.data.frame(h2o.predict(gbm.model_volume, test.h2o))
+```
+
+```{r}
+sub_gbm <- data.frame(ID = test$ID, Number_Of_Sales = predict.gbm_volume$predict, Price = predict.gbm_price$predict)
+write.csv(sub_gbm, file = "sub_gbm_new_2.csv", row.names = F)
+```
+
+```{r}
+# predict.gbm_price <- as.data.frame(h2o.predict(gbm.model_price, train.h2o))
+
+y_dep <- 7
+x_indep <- c(2,4:6,9:17)
+system.time(
+             dlearning.model_price <- h2o.deeplearning(y = y_dep,
+             x = x_indep,
+             training_frame = train.h2o,
+             epoch = 60,
+             hidden = c(100,100),
+             activation = "Rectifier",
+             seed = 1122
+             )
+)
+```
+
+```{r}
+y_dep <- 8
+system.time(
+             dlearning.model_volume <- h2o.deeplearning(y = y_dep,
+             x = x_indep,
+             training_frame = train.h2o,
+             epoch = 60,
+             hidden = c(100,100),
+             activation = "Rectifier",
+             seed = 1122
+             )
+)
+```
+```{r}
+h2o.performance(dlearning.model_price)
+```
+
+```{r}
+predict.dl_price <- as.data.frame(h2o.predict(dlearning.model_price, test.h2o))
+predict.dl_volume <- as.data.frame(h2o.predict(dlearning.model_volume, test.h2o))
+sub_dl <- data.frame(ID = test$ID, Number_Of_Sales = predict.dl_volume$predict, Price = predict.dl_price$predict)
+write.csv(sub_dl, file = "sub_dl_new.csv", row.names = F)
+```
+
+```{r}
+sub_ens <- data.frame(ID = test$ID, Number_Of_Sales = round(0.7 * predict.dl_volume$predict + 0.3 * predict.gbm_volume$predict,0), Price = 0.7 * predict.dl_price$predict + 0.3 * predict.gbm_price$predict)
+write.csv(sub_ens, file = "sub_ens_old.csv", row.names = F)
+```
+
